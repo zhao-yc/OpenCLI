@@ -164,6 +164,8 @@ Browser Bridge daemon 与扩展的通信端口固定为 `localhost:19825`，不�
 
 运行 `opencli list` 查看完整注册表。
 
+每日签到：`opencli ikuuu checkin`，复用浏览器登录态领取流量；[使用说明](docs/adapters/browser/ikuuu.md)。
+
 | 站点 | 命令 |
 |------|------|
 | **xiaohongshu** | `search` `ask` `note` `comments` `notifications` `feed` `user` `saved` `liked` `download` `publish` `follow` `unfollow` `creator-notes` `creator-note-detail` `creator-notes-summary` `creator-profile` `creator-stats` |

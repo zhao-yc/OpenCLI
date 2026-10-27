@@ -4,6 +4,8 @@ Run `opencli list` for the live registry.
 
 ## Browser Adapters
 
+每日签到：[iKuuu](./browser/ikuuu.md) — `opencli ikuuu checkin`（需浏览器登录）。
+
 | Site                                     | Commands                                                                                                                                                                                                                                                         | Mode                                |
 | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
 | **[twitter](./browser/twitter.md)**         | `trending` `bookmarks` `profile` `search` `timeline` `thread` `following` `followers` `notifications` `post` `reply` `delete` `like` `likes` `lists` `article` `follow` `unfollow` `bookmark` `unbookmark` `download` `accept` `reply-dm` `block` `unblock` `hide-reply` | 🔐 Browser                          |

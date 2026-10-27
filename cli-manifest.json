@@ -19259,6 +19259,24 @@
     "siteSession": "persistent"
   },
   {
+    "site": "ikuuu",
+    "name": "checkin",
+    "description": "iKuuu 每日签到并领取流量奖励（需浏览器登录）",
+    "access": "write",
+    "domain": "ikuuu.top",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [],
+    "columns": [
+      "status",
+      "message"
+    ],
+    "type": "js",
+    "modulePath": "ikuuu/checkin.js",
+    "sourceFile": "ikuuu/checkin.js",
+    "navigateBefore": false
+  },
+  {
     "site": "imdb",
     "name": "person",
     "description": "Get actor or director info",
