@@ -24,7 +24,9 @@
 - 专项回归：`npx vitest run --project adapter clis/jd clis/unicloud`。
 - 类型检查：`npm run typecheck`；定义检查：`node dist/src/main.js adapter check jd` 与 `node dist/src/main.js adapter check unicloud`。
 - 构建会清理dist；构建与读取dist的测试顺序执行。
-- 日常CLI使用 `node dist/src/main.js`，不擅自替换全局npm安装。
+- 本机已按用户授权安装自有fork快照，日常可直接使用 `opencli`；开发调试也可用 `node dist/src/main.js`。
+- 全局安装与开发分支解耦。源码修改后须从 `yinzon/extensions` 构建、打包并重新安装，不能用官方npm包更新覆盖自研版。
+- 全局更新前备份现有安装和命令链接；安装使用 `--ignore-scripts`，保留本机适配器覆盖，完成后核对实际命令清单与源码SHA-256。
 - uniCloud默认只预览；实际0元续费在用户授权的空间范围内执行，并核对到期时间延长。禁止结果不明时重复提交。
 - 不自行创建定时续费任务。
 - 外置浏览器默认ego lite。截图、账号订单记录放 `.local/` 或受保护归档，不进入Git。
