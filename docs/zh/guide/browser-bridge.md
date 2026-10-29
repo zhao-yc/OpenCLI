@@ -66,6 +66,8 @@ opencli browser my-session close
 
 `OpenCLI Browser` 和 `OpenCLI Adapter` tab group 是扩展管理的自动化容器；请不要把自己的长期 tab 放进去，也不要重命名。
 
+适配器命令（例如 `opencli ikuuu checkin`）默认优先在现有普通浏览器窗口中创建独立后台标签，不覆盖用户已有标签；临时会话结束后关闭任务标签，不留下空白窗口。隐身窗口不参与复用。没有可用普通窗口或显式使用 `--window foreground` 时，仍使用专用窗口。此行为需要重新加载更新后的 Browser Bridge 扩展；仅更新 CLI 不会更新浏览器中已加载的扩展代码。`--keep-tab` 或持久会话仍按原规则保留任务标签。
+
 ## Daemon 生命周期
 
 Daemon 在首次运行浏览器命令时自动启动，之后保持常驻运行。

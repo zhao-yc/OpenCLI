@@ -199,6 +199,7 @@ function createChromeMock() {
       onEvent: { addListener: vi.fn() } as Listener<(source: any, method: string, params: any) => void>,
     },
     windows: {
+      getAll: vi.fn(async (_options: unknown): Promise<chrome.windows.Window[]> => []),
       get: vi.fn(async (windowId: number) => ({ id: windowId, focused: windowId === lastFocusedWindowId })),
       create: vi.fn(async ({ url, focused, width, height, type }: any) => ({ id: 1, url, focused, width, height, type })),
       remove: vi.fn(async (_windowId: number) => {}),
@@ -270,6 +271,128 @@ describe('background tab isolation', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it('后台适配器在现有普通窗口中新建后台标签，不覆盖用户页面', async () => {
+    const { chrome, tabs } = createChromeMock();
+    chrome.windows.getAll.mockResolvedValue([
+      { id: 2, type: 'normal', focused: true, incognito: false } as chrome.windows.Window,
+    ]);
+    vi.stubGlobal('chrome', chrome);
+    const mod = await import('./background');
+
+    const tabId = await mod.__test__.resolveTabId(undefined, adapterKey('ikuuu'));
+
+    expect(chrome.windows.create).not.toHaveBeenCalled();
+    expect(chrome.tabs.create).toHaveBeenCalledWith({ windowId: 2, url: 'about:blank', active: false });
+    expect(tabId).toBe(10);
+    expect(tabs.find(tab => tab.id === 2)).toMatchObject({ url: 'https://user.example', active: true });
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+  });
+
+  it('借用窗口中的任务结束后只关闭任务标签，不清空页面或关闭用户窗口', async () => {
+    const { chrome } = createChromeMock();
+    chrome.windows.getAll.mockResolvedValue([
+      { id: 2, type: 'normal', focused: true, incognito: false } as chrome.windows.Window,
+    ]);
+    vi.stubGlobal('chrome', chrome);
+    const mod = await import('./background');
+    const tabId = await mod.__test__.resolveTabId(undefined, adapterKey('ikuuu'));
+    // 显式选择任务标签也必须保留共享窗口标识，避免退出时留下空白页。
+    await mod.__test__.handleCommand({
+      id: 'select-ikuuu', action: 'tabs', op: 'select', session: 'ikuuu', surface: 'adapter', page: `target-${tabId}`,
+    });
+    chrome.tabs.update.mockClear();
+
+    const result = await mod.__test__.handleCommand({
+      id: 'close-ikuuu', action: 'close-window', session: 'ikuuu', surface: 'adapter',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(chrome.tabs.remove).toHaveBeenCalledExactlyOnceWith(tabId);
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+    expect(chrome.windows.remove).not.toHaveBeenCalled();
+    expect(mod.__test__.getSession(adapterKey('ikuuu'))).toBeNull();
+  });
+
+  it('后台适配器不复用用户的空白标签，也不会选择隐身或弹出窗口', async () => {
+    const { chrome, tabs } = createChromeMock();
+    tabs.push({ id: 4, windowId: 2, url: 'about:blank', active: false });
+    chrome.windows.getAll.mockResolvedValue([
+      { id: 3, type: 'normal', focused: true, incognito: true } as chrome.windows.Window,
+      { id: 4, type: 'popup', focused: true, incognito: false } as chrome.windows.Window,
+      { id: 2, type: 'normal', focused: false, incognito: false } as chrome.windows.Window,
+    ]);
+    vi.stubGlobal('chrome', chrome);
+    const mod = await import('./background');
+
+    expect(await mod.__test__.resolveTabId(undefined, adapterKey('ikuuu'))).toBe(10);
+    expect(chrome.tabs.create).toHaveBeenCalledWith(expect.objectContaining({ windowId: 2, active: false }));
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+  });
+
+  it('并行适配器借用同一窗口时分别创建和释放任务标签', async () => {
+    const { chrome } = createChromeMock();
+    chrome.windows.getAll.mockResolvedValue([
+      { id: 2, type: 'normal', focused: true, incognito: false } as chrome.windows.Window,
+    ]);
+    vi.stubGlobal('chrome', chrome);
+    const mod = await import('./background');
+    const [first, second] = await Promise.all([
+      mod.__test__.resolveTabId(undefined, adapterKey('first')),
+      mod.__test__.resolveTabId(undefined, adapterKey('second')),
+    ]);
+    expect(first).not.toBe(second);
+    await mod.__test__.handleCommand({ id: 'close-first', action: 'close-window', session: 'first', surface: 'adapter' });
+    expect(chrome.tabs.remove).toHaveBeenCalledExactlyOnceWith(first);
+    expect(mod.__test__.getSession(adapterKey('second'))?.preferredTabId).toBe(second);
+    await mod.__test__.handleCommand({ id: 'close-second', action: 'close-window', session: 'second', surface: 'adapter' });
+    expect(chrome.tabs.remove).toHaveBeenLastCalledWith(second);
+    expect(chrome.windows.create).not.toHaveBeenCalled();
+  });
+
+  it('没有普通窗口或查询失败时仍使用专用窗口', async () => {
+    const { chrome } = createChromeMock();
+    chrome.windows.getAll.mockRejectedValue(new Error('浏览器查询失败'));
+    vi.stubGlobal('chrome', chrome);
+    const mod = await import('./background');
+    await mod.__test__.resolveTabId(undefined, adapterKey('ikuuu'));
+    expect(chrome.windows.create).toHaveBeenCalledOnce();
+  });
+
+  it('服务工作线程恢复后仍只释放借用窗口中的任务标签', async () => {
+    const { chrome } = createChromeMock();
+    chrome.windows.getAll.mockResolvedValue([
+      { id: 2, type: 'normal', focused: true, incognito: false } as chrome.windows.Window,
+    ]);
+    vi.stubGlobal('chrome', chrome);
+    const mod = await import('./background');
+    const tabId = await mod.__test__.resolveTabId(undefined, adapterKey('ikuuu'));
+    // 从持久化租约恢复，不能把用户窗口登记成专用自动化容器。
+    await mod.__test__.reconcileTargetLeaseRegistry();
+    expect(mod.__test__.getSession(adapterKey('ikuuu'))?.sharedWindow).toBe(true);
+    const state = await chrome.storage.session.get('opencli_target_lease_registry_v2');
+    expect((state.opencli_target_lease_registry_v2 as any).ownedContainers.automation.windowId).toBeNull();
+
+    await mod.__test__.handleCommand({ id: 'close-restored', action: 'close-window', session: 'ikuuu', surface: 'adapter' });
+    expect(chrome.tabs.remove).toHaveBeenCalledExactlyOnceWith(tabId);
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+    expect(chrome.windows.remove).not.toHaveBeenCalled();
+  });
+
+  it('显式前台适配器即使存在用户窗口也保留专用窗口行为', async () => {
+    const { chrome } = createChromeMock();
+    chrome.windows.getAll.mockResolvedValue([
+      { id: 2, type: 'normal', focused: true, incognito: false } as chrome.windows.Window,
+    ]);
+    vi.stubGlobal('chrome', chrome);
+    const mod = await import('./background');
+    await mod.__test__.handleCommand({
+      id: 'foreground', action: 'tabs', op: 'new', session: 'ikuuu', surface: 'adapter',
+      url: 'https://ikuuu.top/user', windowMode: 'foreground',
+    });
+    expect(chrome.windows.getAll).not.toHaveBeenCalled();
+    expect(chrome.windows.create).toHaveBeenCalledWith(expect.objectContaining({ focused: true }));
   });
 
   it('lists only automation-window web tabs', async () => {

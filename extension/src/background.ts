@@ -297,6 +297,8 @@ type TargetLease = {
   idleTimer: ReturnType<typeof setTimeout> | null;
   idleDeadlineAt: number;
   owned: boolean;
+  /** 标签归 OpenCLI 所有，但所在窗口属于用户；清理和恢复不得把窗口据为己有。 */
+  sharedWindow?: boolean;
   preferredTabId: number | null;
   contextId: BrowserContextId;
   ownership: LeaseOwnership;
@@ -550,6 +552,7 @@ async function persistRuntimeState(): Promise<void> {
       kind: session.kind,
       windowId: session.windowId,
       owned: session.owned,
+      sharedWindow: session.sharedWindow,
       preferredTabId: session.preferredTabId,
       contextId: session.contextId,
       ownership: session.ownership,
@@ -870,9 +873,7 @@ async function ensureOwnedContainerGroup(
   fallbackWindowId: number | null,
   tabIds: Array<number | undefined>,
 ): Promise<OwnedContainerGroup | null> {
-  // Adapter automation runs in an owned background window but no longer creates
-  // a visible "OpenCLI Adapter" tab group. Its ownership anchors are the
-  // persisted container windowId and per-lease preferredTabId.
+  // 适配器标签不创建可见分组，标签归属通过每个租约的 preferredTabId 判断。
   if (role === 'automation') return null;
 
   const ids = [...new Set(tabIds.filter((id): id is number => id !== undefined))];
@@ -936,8 +937,8 @@ async function ensureOwnedContainerGroupUnlocked(
  * First-principles model:
  * - BrowserContext is the user's default Chrome profile.
  * - Session identity maps to a TargetLease (usually a tab), not a window.
- * - Browser commands and adapters use separate owned windows so foreground
- *   interactive work cannot drag background adapter automation into view.
+ * - 后台适配器优先在用户现有普通窗口中创建独立后台标签。
+ * - 交互命令、前台适配器以及没有可用用户窗口时仍使用专用窗口。
  */
 async function ensureOwnedContainerWindow(
   role: OwnedWindowRole,
@@ -958,6 +959,12 @@ async function ensureOwnedContainerWindowUnlocked(
   initialUrl?: string,
   mode: WindowMode = 'background',
 ): Promise<{ windowId: number; initialTabId?: number }> {
+  // 后台适配器只借用普通窗口的位置，始终新建自己的标签，不接管用户页面。
+  // 不缓存借用的窗口为 owned container，避免恢复或清理时把用户窗口当作专用容器。
+  if (role === 'automation' && mode === 'background') {
+    const windowId = await findAdapterHostWindow();
+    if (windowId !== undefined) return { windowId };
+  }
   const container = ownedContainers[role];
   if (container.windowId !== null) {
     try {
@@ -1047,6 +1054,22 @@ async function ensureOwnedContainerWindowUnlocked(
   return { windowId: group?.windowId ?? container.windowId, initialTabId };
 }
 
+/** 优先选择当前普通窗口；隐身窗口和 OpenCLI 专用窗口不作为借用目标。 */
+async function findAdapterHostWindow(): Promise<number | undefined> {
+  try {
+    const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+    const candidates = windows.filter(win =>
+      typeof win.id === 'number' && !win.incognito && win.type === 'normal'
+      && win.id !== ownedContainers.interactive.windowId
+      && win.id !== ownedContainers.automation.windowId,
+    );
+    return (candidates.find(win => win.focused) ?? candidates[0])?.id;
+  } catch {
+    // 无可用普通窗口或浏览器查询失败时，沿用专用窗口机制。
+    return undefined;
+  }
+}
+
 async function findReusableOwnedContainerTab(windowId: number, ownedGroupId?: number | null): Promise<number | undefined> {
   try {
     const tabs = await chrome.tabs.query({ windowId });
@@ -1087,6 +1110,7 @@ async function createOwnedTabLeaseUnlocked(leaseKey: string, initialUrl?: string
   const targetUrl = (initialUrl && isSafeNavigationUrl(initialUrl)) ? initialUrl : BLANK_PAGE;
   const role = getOwnedWindowRole(leaseKey);
   const { windowId, initialTabId } = await ensureOwnedContainerWindow(role, targetUrl, getWindowMode(leaseKey));
+  const sharedWindow = role === 'automation' && windowId !== ownedContainers.automation.windowId;
   let tab: chrome.tabs.Tab;
 
   if (initialTabIsAvailable(initialTabId)) {
@@ -1097,7 +1121,7 @@ async function createOwnedTabLeaseUnlocked(leaseKey: string, initialUrl?: string
       tab = await chrome.tabs.get(initialTabId);
     }
   } else {
-    tab = await chrome.tabs.create({ windowId, url: targetUrl, active: true });
+    tab = await chrome.tabs.create({ windowId, url: targetUrl, active: !sharedWindow });
   }
   const tabId = tab.id;
   if (!tabId) throw new Error('Failed to create tab lease in automation container');
@@ -1112,6 +1136,7 @@ async function createOwnedTabLeaseUnlocked(leaseKey: string, initialUrl?: string
     windowId: sessionWindowId,
     owned: true,
     preferredTabId: tabId,
+    sharedWindow,
   });
   resetWindowIdleTimer(leaseKey);
   return { tabId, tab };
@@ -1717,6 +1742,7 @@ function preferOwnedTab(leaseKey: string, tabId: number): void {
     windowId: session.windowId,
     owned: true,
     preferredTabId: tabId,
+    sharedWindow: session.sharedWindow,
   });
 }
 
@@ -1850,7 +1876,7 @@ async function handleTabs(cmd: Command, leaseKey: string): Promise<Result> {
         return pageScopedResult(cmd.id, created.tabId, { url: created.tab?.url });
       }
       const windowId = await getAutomationWindow(leaseKey);
-      let tab = await chrome.tabs.create({ windowId, url: cmd.url ?? BLANK_PAGE, active: true });
+      let tab = await chrome.tabs.create({ windowId, url: cmd.url ?? BLANK_PAGE, active: !session?.sharedWindow });
       const tabId = tab.id;
       if (!tabId) return { id: cmd.id, ok: false, error: 'Failed to create tab' };
       const group = await ensureOwnedContainerGroup(getOwnedWindowRole(leaseKey), windowId, [tabId]);
@@ -1863,6 +1889,7 @@ async function handleTabs(cmd: Command, leaseKey: string): Promise<Result> {
         windowId: sessionWindowId,
         owned: true,
         preferredTabId: tabId,
+        sharedWindow: session?.sharedWindow,
       });
       resetWindowIdleTimer(leaseKey);
       return pageScopedResult(cmd.id, tabId, { url: tab.url });
@@ -2143,7 +2170,9 @@ async function releaseLease(leaseKey: string, reason: string = 'released'): Prom
       );
       await safeDetach(tabId);
       identity.evictTab(tabId);
-      if (hasOtherOwnedLease) {
+      // 借用窗口中的任务标签直接关闭，不能留下空白占位，更不能关闭用户窗口。
+      const usesUserWindow = session.sharedWindow === true;
+      if (hasOtherOwnedLease || usesUserWindow) {
         await chrome.tabs.remove(tabId).catch(() => {});
         console.log(`[opencli] Released owned tab lease ${tabId} (session=${session.session}, surface=${session.surface}, ${reason})`);
       } else {
@@ -2208,6 +2237,7 @@ async function reconcileTargetLeaseRegistry(): Promise<void> {
         kind: stored.kind === 'bound' || stored.owned === false ? 'bound' : 'owned',
         windowId: tab.windowId,
         owned: stored.owned,
+        sharedWindow: stored.sharedWindow === true,
         preferredTabId: tabId,
       });
       const timeout = getIdleTimeout(leaseKey);
@@ -2216,7 +2246,7 @@ async function reconcileTargetLeaseRegistry(): Promise<void> {
         idleTimer: null,
         idleDeadlineAt: stored.idleDeadlineAt,
       });
-      if (session.owned) {
+      if (session.owned && !session.sharedWindow) {
         const role = getOwnedWindowRole(leaseKey);
         if (ownedContainers[role].windowId === null) ownedContainers[role].windowId = tab.windowId;
         const group = await ensureOwnedContainerGroup(role, tab.windowId, [tabId]);
